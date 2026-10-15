@@ -1,0 +1,132 @@
+from machine import Pin
+from time import sleep_ms, ticks_ms, ticks_diff
+from ir_rx.nec import NEC_8
+from ir_rx.print_error import print_error
+
+DEVICE_ADDR = 0x01
+
+CMD_STOP = 0x00
+CMD_FORWARD = 0x01
+CMD_BACKWARD = 0x02
+CMD_LEFT = 0x03
+CMD_RIGHT = 0x04
+
+# Stop if IR commands are lost
+TIMEOUT_MS = 500
+
+# Motor A
+phaseA = Pin(20, Pin.OUT, value=0)
+enableA = Pin(21, Pin.OUT, value=0)
+
+# Motor B
+phaseB = Pin(26, Pin.OUT, value=0)
+enableB = Pin(27, Pin.OUT, value=0)
+
+# Assumes motor A is the left wheel, B is the right wheel.
+# Change either value if that wheel runs backward.
+A_FORWARD = 1
+B_FORWARD = 1
+
+# LEDs
+led_forward = Pin(10, Pin.OUT, value=0)
+led_backward = Pin(11, Pin.OUT, value=0)
+led_turn = Pin(12, Pin.OUT, value=0)
+
+pending_command = None
+last_received = ticks_ms()
+current_command = CMD_STOP
+
+
+def stop():
+    enableA.value(0)
+    enableB.value(0)
+
+
+def set_motors(a_direction, b_direction):
+    stop()
+    phaseA.value(a_direction)
+    phaseB.value(b_direction)
+    enableA.value(1)
+    enableB.value(1)
+
+
+def apply_command(command):
+    led_forward.off()
+    led_backward.off()
+    led_turn.off()
+
+    if command == CMD_FORWARD:
+        set_motors(A_FORWARD, B_FORWARD)
+        led_forward.on()
+        print("Forward")
+
+    elif command == CMD_BACKWARD:
+        set_motors(1 - A_FORWARD, 1 - B_FORWARD)
+        led_backward.on()
+        print("Backward")
+
+    elif command == CMD_LEFT:
+        set_motors(1 - A_FORWARD, B_FORWARD)
+        led_turn.on()
+        print("Turn left")
+
+    elif command == CMD_RIGHT:
+        set_motors(A_FORWARD, 1 - B_FORWARD)
+        led_turn.on()
+        print("Turn right")
+
+    elif command == CMD_STOP:
+        stop()
+        print("Motors stopped")
+
+
+def ir_callback(data, addr, ctrl):
+    global pending_command, last_received
+
+    if data < 0 or addr != DEVICE_ADDR:
+        return
+
+    if data not in (
+        CMD_STOP, CMD_FORWARD, CMD_BACKWARD, CMD_LEFT, CMD_RIGHT
+    ):
+        return
+
+    last_received = ticks_ms()
+    pending_command = data
+
+
+ir_pin = Pin(17, Pin.IN, Pin.PULL_UP)
+ir_receiver = NEC_8(ir_pin, ir_callback)
+ir_receiver.error_function(print_error)
+
+try:
+    print("Test 9 ready — waiting for joystick commands")
+
+    while True:
+        command = pending_command
+
+        if command is not None:
+            pending_command = None
+
+            print("Data: 0x{:02X}, Address: 0x{:02X}".format(
+                command, DEVICE_ADDR
+            ))
+
+            if command != current_command:
+                apply_command(command)
+                current_command = command
+
+        if current_command != CMD_STOP:
+            if ticks_diff(ticks_ms(), last_received) > TIMEOUT_MS:
+                apply_command(CMD_STOP)
+                current_command = CMD_STOP
+                print("IR timeout")
+
+        sleep_ms(10)
+
+finally:
+    ir_receiver.close()
+    stop()
+    led_forward.off()
+    led_backward.off()
+    led_turn.off()
